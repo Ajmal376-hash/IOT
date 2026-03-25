@@ -1,0 +1,134 @@
+import cv2
+import numpy as np
+import pytesseract
+import time
+import json
+import paho.mqtt.client as mqtt
+from picamera2 import Picamera2
+import RPi.GPIO as GPIO
+from datetime import datetime
+
+# ========================= CONFIGURATION =========================
+MQTT_BROKER = "mqtt.thingspeak.com"          # Change to your broker
+MQTT_PORT = 1883
+MQTT_TOPIC = "channels/YOUR_CHANNEL_ID/publish"   # Replace with your ThingSpeak channel
+MQTT_USER = "YOUR_THINGSPEAK_WRITE_API_KEY"       # Write API Key
+
+# Indian plate regex pattern (basic validation)
+import re
+PLATE_PATTERN = re.compile(r'^[A-Z]{2}\d{2}[A-Z]{1,2}\d{4}$')
+
+# GPIO for PIR Motion Sensor (optional)
+PIR_PIN = 17
+USE_MOTION = True
+
+# Tesseract path (usually auto-detected)
+pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
+
+# ================================================================
+
+# MQTT Setup
+client = mqtt.Client()
+client.username_pw_set(MQTT_USER, "")
+
+def on_connect(client, userdata, flags, rc):
+    print(f"[INFO] Connected to MQTT Broker with code {rc}")
+
+client.on_connect = on_connect
+client.connect(MQTT_BROKER, MQTT_PORT, 60)
+client.loop_start()
+
+# Initialize Camera
+picam2 = Picamera2()
+picam2.configure(picam2.create_still_configuration(main={"size": (1920, 1080)}))
+picam2.start()
+time.sleep(2)  # Camera warm-up
+
+if USE_MOTION:
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(PIR_PIN, GPIO.IN)
+
+print("[INFO] Automatic License Plate Detection System Started...")
+
+def detect_and_recognize_plate(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    edged = cv2.Canny(blur, 50, 200)
+
+    # Find contours
+    contours, _ = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:10]
+
+    plate = None
+    for cnt in contours:
+        peri = cv2.arcLength(cnt, True)
+        approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
+
+        if len(approx) == 4:  # Quadrilateral (likely plate)
+            x, y, w, h = cv2.boundingRect(cnt)
+            aspect_ratio = w / float(h)
+            area = w * h
+
+            if 3.5 < aspect_ratio < 5.5 and area > 4000:  # Indian plate approx ratio
+                plate = frame[y:y+h, x:x+w]
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 3)
+                break
+
+    if plate is None:
+        return None, frame
+
+    # Preprocess plate for OCR
+    plate_gray = cv2.cvtColor(plate, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(plate_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # OCR
+    custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    text = pytesseract.image_to_string(thresh, config=custom_config).strip().replace(" ", "")
+
+    return text, frame
+
+try:
+    while True:
+        if USE_MOTION:
+            if GPIO.input(PIR_PIN) == GPIO.LOW:
+                time.sleep(0.5)
+                continue
+
+        # Capture frame
+        frame = picam2.capture_array()
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)  # Convert to BGR for OpenCV
+
+        plate_text, annotated_frame = detect_and_recognize_plate(frame)
+
+        if plate_text:
+            print(f"[DETECTED] Plate: {plate_text} | Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+            # Validate Indian plate format
+            if PLATE_PATTERN.match(plate_text):
+                # Prepare MQTT payload
+                payload = {
+                    "field1": plate_text,
+                    "field2": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "status": "VALID"
+                }
+
+                client.publish(MQTT_TOPIC, json.dumps(payload))
+                print(f"[MQTT] Published: {plate_text}")
+            else:
+                print(f"[WARNING] Invalid format: {plate_text}")
+
+        # Optional: Show live preview (remove in production)
+        # cv2.imshow("ALPR System", annotated_frame)
+        # if cv2.waitKey(1) & 0xFF == ord('q'):
+        #     break
+
+        time.sleep(1)  # Adjust for processing speed
+
+except KeyboardInterrupt:
+    print("\n[INFO] System Stopped by User")
+finally:
+    picam2.stop()
+    GPIO.cleanup()
+    client.loop_stop()
+    client.disconnect()
+    cv2.destroyAllWindows()
