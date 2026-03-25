@@ -1,29 +1,7 @@
+# 🚀 Automatic License Plate Detection System
 
-for our mini project by Embedded Subject.
+This project presents an embedded system integrated with IoT for real-time vehicle license plate detection and recognition. It uses Raspberry Pi, camera module, OpenCV, and Tesseract OCR to capture and process images, extract license plate data, and send it to the cloud using MQTT protocol.
 
-this is algorithm-
-how to Run:
-python3 alpr_iot.py
+The system is designed to be low-cost, efficient, and suitable for smart city applications such as traffic monitoring, toll automation, parking systems, and security enforcement.
 
-To Run as Background Service (Recommended):
-Create /etc/systemd/system/alpr.service:
-[Unit]
-Description=ALPR IoT System
-After=multi-user.target
-
-[Service]
-ExecStart=/usr/bin/python3 /home/pi/alpr_iot.py
-WorkingDirectory=/home/pi
-StandardOutput=inherit
-StandardError=inherit
-Restart=always
-User=pi
-
-[Install]
-WantedBy=multi-user.target
-
-
-Bash:
-sudo systemctl daemon-reload
-sudo systemctl enable alpr.service
-sudo systemctl start alpr.service
+🎯 Achieves real-time processing with high accuracy and fast cloud communication.
